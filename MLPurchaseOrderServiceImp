@@ -1,0 +1,592 @@
+package com.changhong.vmi.admin.xfire.service.imp;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.text.ParseException;
+import java.util.Date;
+import java.util.HashSet;
+import java.util.Set;
+
+import javax.naming.InitialContext;
+import javax.naming.NamingException;
+import javax.sql.DataSource;
+
+import org.apache.commons.dbutils.DbUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+
+import com.changhong.fw.core.Constants;
+import com.changhong.utils.DateUtil;
+import com.changhong.vmi.admin.xfire.pojo.BaseReturnHeader;
+import com.changhong.vmi.admin.xfire.pojo.BaseReturnItem;
+import com.changhong.vmi.admin.xfire.pojo.BaseReturnMess;
+import com.changhong.vmi.admin.xfire.pojo.MLPurchaseOrder;
+import com.changhong.vmi.admin.xfire.pojo.Po;
+import com.changhong.vmi.admin.xfire.pojo.PoHeader;
+import com.changhong.vmi.admin.xfire.pojo.PoItem;
+import com.changhong.vmi.admin.xfire.service.MLPurchaseOrderService;
+/**
+ * 
+ * @author Fun
+ *	美菱订单抬头和订单行项目数据获取服务
+ */
+public class MLPurchaseOrderServiceImp implements MLPurchaseOrderService{
+	
+	protected final static Log logger = LogFactory.getLog(MLPurchaseOrderServiceImp.class);
+	
+	private final static String PO_TABLE = Constants.PO_TABLE;//订单抬头
+	
+	private final static String POLINE_TABLE = Constants.POLINE_TABLE;//订单行项目
+	
+	private DataSource dataSource = null;
+	
+	public void setDataSource(DataSource dataSource) {
+		this.dataSource = dataSource;
+	}
+	@Override
+	public BaseReturnMess handleMLPurchaseOrderService(MLPurchaseOrder mlPurchaseOrder) {
+		BaseReturnMess baseReturnMess = new BaseReturnMess();//消息返回类
+		Set<Po> pos = mlPurchaseOrder.getPos();
+		BaseReturnHeader baseReturnHeader = new BaseReturnHeader();
+		Set<BaseReturnItem> items = new HashSet<BaseReturnItem>();
+		String existSql = "select bukrs,waers,ekgrp,ekorg,lifnr,zterm,R3LASTEDITTIME  from " + PO_TABLE + "  where ebeln = ?";
+		String existItemSql = "select EBELN,MENGE,MATNR,EINDT,LOEKZ,R3LASTEDITTIME from " + POLINE_TABLE + " where EBELN = ? and EBELP = ?";
+		//抬头只增加6个备用字段 和之前一样
+		String insertPoStr = "Insert into "
+				+ PO_TABLE
+				+ "(ID, VERSION, AEDAT, WAERS, BUKRS, EBELN, ERNAM, FRGGR, FRGXS, POTYPE, "
+				+ " EKGRP, EKORG, LIFNR, ZTERM, PODATE, POSTATUS, DELETEFLAG, CREATETIME, LASTEDITTIME, STATUS, LOCKED, ISCLOSEPO, "
+				+ " RANK, DS, BACKTIME, LOEKZ, ELIKZ, LASTEDITUSERLOGINID,R3LASTEDITTIME,COMPENSATESIGN) "
+				+ " Values(" + PO_TABLE + "_ids.nextval, 1, ?,?,?,?,?,?,?,?,"
+				+ " ?,?,?,?,?,?, '0', SYSTIMESTAMP, SYSTIMESTAMP, ?, '0', '2',"
+				+ "1, 'sys', SYSTIMESTAMP, ?, ?, 'XI',SYSTIMESTAMP,?)";
+		//存在订单抬头更新 判断公司、币种、供应商、采购组织、采购组、付款条件是否变化，如果变化，更新R3EDITTIME；如果没变化，R3EDITTIME保持不变
+		String updatePoStr = "update "
+				+ PO_TABLE
+				+ " set AEDAT = ?, WAERS = ?, BUKRS = ?, EBELN = ?, ERNAM = ?, FRGGR = ?, FRGXS = ?, POTYPE = ?, EKGRP = ?, EKORG = ?, "
+				+ "LIFNR = ?, ZTERM = ?, PODATE = ?, LASTEDITTIME = sysdate, STATUS = ?, BACKTIME = SYSTIMESTAMP, LOEKZ = ?, ELIKZ = ?, LASTEDITUSERLOGINID = 'x', R3LASTEDITTIME= ?,COMPENSATESIGN=?"
+				+ " where ebeln = ?";
+		//订单行项目新增八个字段
+		String insertPoItemStr = "Insert into "
+				+ POLINE_TABLE
+				+ "(ID, VERSION, XERSY, EBELP, EBELN, EINDT, ELIKZ, WERKS, KNTTP, LGORT, " 
+				+ "LOEKZ, MATKL, MATNR, MEINS, MENGE, MFRNR, MWSKZ, PSTYP, REPOS, UEBTO, " 
+				+ "UNBTO, WEBRE, DELETEFLAG, CREATETIME, BEDNR, CHARG, STUFFTYPE, R3RECEIVE, POLINESTATUS, EKGRP, "
+				+ "R3RECEIVEDAT, RECEIVE103, RECEIVE103DAT, BACKTIME, ZPFLAG, STANDBY4,R3LASTEDITTIME, ISSHOUHUO,CO_MATNR,CO_MATXT,ZCBWL,ZJIT,ZCTWL,ZZDZD,ZJMWL,ZBBWL) "
+				+ " Values(" + POLINE_TABLE
+				+ "_ids.nextval, 1, ?,?,?,?,?,?,?,?," +
+						"?,?,?,?,?,?,?,?,?,?," +
+						"?,?" + ", '0',sysdate,?,?,?,?,?,?,"+
+						"?,?,?, SYSTIMESTAMP,?,?,SYSTIMESTAMP,?,?,?,?,?,?,?,?,?)"; 
+		
+		/**
+		 * 进行行项更新  //判断 数量MENGE、物料MATNR、交期 eindt、取消删除 标志 是否变化
+		 */
+		String updatePoItemStr = "update "
+			+ POLINE_TABLE
+			+ " set XERSY = ?,EBELP = ?, EBELN = ?, EINDT = ?, ELIKZ = ?, WERKS = ?, KNTTP = ?, LGORT = ?, LOEKZ = ?, MATKL = ?, "
+			+ " MATNR = ?, MEINS = ?, MENGE = ?, MFRNR = ?, MWSKZ = ?, PSTYP = ?, REPOS = ?, UEBTO = ?, UNBTO = ?, WEBRE = ?, "
+			+ " LASTEDITTIME  = sysdate, BEDNR = ?,CHARG = ?, R3RECEIVE = ?, EKGRP = ?, R3RECEIVEDAT = ?, RECEIVE103 = ?, RECEIVE103DAT = ?, "
+			+ " BACKTIME = SYSTIMESTAMP, ZPFLAG = ?, STANDBY4 = ? ,R3LASTEDITTIME= ? ,ISSHOUHUO= ?,CO_MATNR= ? ,CO_MATXT= ? ,ZCBWL= ? ,ZJIT= ? ,"
+			+ "ZCTWL= ? ,ZZDZD= ? ,ZJMWL= ? ,ZBBWL= ?  "
+			+ " where ebeln=? and EBELP =?";
+		Connection conn = null;
+		ResultSet rs = null;
+		PreparedStatement psInsertPo = null;
+		PreparedStatement psUpdatePo = null;
+		PreparedStatement psInsertPoitem = null;
+		PreparedStatement psUpdatePoitem = null;
+		PreparedStatement existSelect = null;
+		PreparedStatement existItemSelect = null;
+		Boolean isPoExit = false;//判断是否存在，如果存在则设置为true
+		boolean isMark = false;//判断订单抬头是否存在的标记
+		String OnlineBUKRS = "0";
+//		int insertCnt = 0;
+		try {
+			conn = getConnection();
+			conn.setAutoCommit(false);
+			existSelect = conn.prepareStatement(existSql);
+			//订单数据不为空
+			if(pos!=null&&!pos.isEmpty()){
+				logger.debug("开始写入订单数据");
+				for(Po po:pos){
+					//获取订单抬头数据
+					PoHeader poHeader = po.getPoHeader();
+					
+					if(poHeader!=null){                                                                                 
+						existSelect.setString(1, poHeader.getEbeln());
+					}
+					//判断订单是否存在，如果已经存在，则只进行更新操作；否则，进行保存操作
+					rs = existSelect.executeQuery();
+					isMark = false;//标记
+					if(rs.next()){
+						//存在,对抬头进行更新操作
+						isPoExit = true;
+						logger.debug("Update Po Header");
+						try {
+							psUpdatePo = conn.prepareStatement(updatePoStr); 
+							//进行更新
+							psUpdatePo.setDate(1, new java.sql.Date(DateUtil.convertStringToDate("yyyyMMdd",
+									poHeader.getAedat()).getTime()));
+							psUpdatePo.setString(2, poHeader.getWaers());
+							psUpdatePo.setString(3, poHeader.getBukrs());
+							psUpdatePo.setString(4, poHeader.getEbeln());
+							psUpdatePo.setString(5, poHeader.getErnam());
+							psUpdatePo.setString(6, poHeader.getFrggr());
+							psUpdatePo.setString(7, poHeader.getFrgsx());
+							psUpdatePo.setString(8, poHeader.getBsart());
+							psUpdatePo.setString(9, poHeader.getEkgrp());
+							psUpdatePo.setString(10, poHeader.getEkorg());
+							
+							psUpdatePo.setString(11, poHeader.getLifnr());
+							psUpdatePo.setString(12, poHeader.getZterm());
+							psUpdatePo.setDate(13, new java.sql.Date(DateUtil.convertStringToDate(
+									"yyyyMMdd", poHeader.getBedat()).getTime()));
+							
+							if (isPoExit) {
+								psUpdatePo.setString(14, "1");
+							} else {
+								psUpdatePo.setString(14, "0");
+							}
+							psUpdatePo.setString(15, poHeader.getLoekz());
+							psUpdatePo.setString(16, poHeader.getElikz());
+							//判断公司、供应商、采购组织、采购组、付款条件是否变化，如果变化，更新R3EDITTIME；如果没变化，R3EDITTIME保持不变
+							if(!rs.getString("BUKRS").equals(poHeader.getBukrs())||
+							  
+							   !rs.getString("LIFNR").equals(poHeader.getLifnr())||
+							   !rs.getString("EKGRP").equals(poHeader.getEkgrp())||
+							   !rs.getString("EKORG").equals(poHeader.getEkorg())||
+							   !rs.getString("ZTERM").equals(poHeader.getZterm())){
+								psUpdatePo.setTimestamp(17, new Timestamp((new Date()).getTime()));
+							}
+							else{
+								psUpdatePo.setTimestamp(17, rs.getTimestamp("R3LASTEDITTIME"));
+							}
+						    String compensatesign="";
+						    if((poHeader.getIresv1()).equals("SRM_SP")){
+						    	compensatesign="1";
+						    }
+						    else{
+						    	compensatesign="0";
+						    }
+						    psUpdatePo.setString(18,compensatesign);
+						    psUpdatePo.setString(19, poHeader.getEbeln());
+						    //更新完毕，提交
+						    psInsertPo.executeUpdate();//更新成功
+						    
+						    baseReturnHeader.setStatus("S");
+						    baseReturnHeader.setReturnMsg("订单抬头数据更新成功哦！");
+						} catch (SQLException e) {
+							// TODO: handle exception
+							baseReturnHeader.setStatus("E");
+							baseReturnHeader.setReturnMsg(e.toString());
+							baseReturnHeader.setHresv1("订单抬头数据更新失败哦！");
+							e.printStackTrace();
+						}
+						
+					    
+					    isMark = false;
+					}else{
+						isMark = true;
+					}
+					
+					//关闭游标
+					DbUtils.closeQuietly(existSelect);
+					DbUtils.closeQuietly(rs);
+					DbUtils.closeQuietly(psUpdatePo);
+					//不存在，进行保存操作
+					if(isMark){
+						logger.debug("insert Po Header");
+						try {
+							psInsertPo = conn.prepareStatement(insertPoStr);
+							psInsertPo.setDate(1, new java.sql.Date(DateUtil.convertStringToDate("yyyyMMdd",
+									poHeader.getAedat()).getTime()));
+							psInsertPo.setString(2, poHeader.getWaers());
+							psInsertPo.setString(3, poHeader.getBukrs());
+							psInsertPo.setString(4, poHeader.getEbeln());
+							psInsertPo.setString(5, poHeader.getErnam());
+							psInsertPo.setString(6, poHeader.getFrggr());
+							psInsertPo.setString(7, poHeader.getFrgsx());
+							psInsertPo.setString(8, poHeader.getBsart());
+							psInsertPo.setString(9, poHeader.getEkgrp());
+							psInsertPo.setString(10, poHeader.getEkorg());
+							psInsertPo.setString(11, poHeader.getLifnr());
+							psInsertPo.setString(12, poHeader.getZterm());
+							psInsertPo.setDate(13, new java.sql.Date(DateUtil.convertStringToDate(
+									"yyyyMMdd", poHeader.getBedat()).getTime()));
+							psInsertPo.setInt(14, 2);
+							
+							if (isPoExit) {
+								psInsertPo.setString(15, "1");
+							} else {
+								psInsertPo.setString(15, "0");
+							}	
+							psInsertPo.setString(16, poHeader.getLoekz());
+							psInsertPo.setString(17, poHeader.getElikz());
+							//compensatesign为1时表示为索赔创建的订单
+						    String compensatesign="";
+							if((poHeader.getIresv1()).equals("SRM_SP")){
+						    	compensatesign="1";
+						    }
+						    else{
+						    	compensatesign="0";
+						    }
+							psInsertPo.setString(18,compensatesign);
+							//增加操作完毕，提交
+							psInsertPo.executeUpdate();
+							
+							baseReturnHeader.setStatus("S");
+						    baseReturnHeader.setReturnMsg("订单抬头数据新增成功哦！");
+						} catch (SQLException e) {
+							baseReturnHeader.setStatus("E");
+							baseReturnHeader.setReturnMsg(e.toString());
+							baseReturnHeader.setHresv1("订单抬头数据新增失败哦！");
+							e.printStackTrace();
+						}
+						
+					}
+					DbUtils.closeQuietly(psInsertPo);//关闭PrepareStatment对象
+					/**
+					 * 对行项目进行处理
+					 */
+					//获取订单行项目数据
+					Set<PoItem> poItems = po.getPoItem();
+					if(poItems!=null&&!poItems.isEmpty()){
+						for(PoItem poItem:poItems){
+							BaseReturnItem item  = new BaseReturnItem();
+							
+							logger.debug("deal Po Item");
+							existItemSelect = conn.prepareStatement(existItemSql);
+							//这里判断行项目是否存在传递了两个参数
+							existItemSelect.setString(1, poItem.getEbeln());
+							existItemSelect.setString(2, poItem.getEbelp());
+							
+							rs = existItemSelect.executeQuery();
+							
+							isMark = false;//设置默认为不存在
+							if(rs.next()){
+								//行项目存在，进行更新操作
+								try {
+									psUpdatePoitem = conn.prepareStatement(updatePoItemStr);
+									psUpdatePoitem.setString(1, poItem.getXersy());
+									psUpdatePoitem.setString(2, poItem.getEbelp());
+									psUpdatePoitem.setString(3, poItem.getEbeln());
+									psUpdatePoitem.setString(4, poItem.getEindt());
+									psUpdatePoitem.setString(5, poItem.getElikz());
+									psUpdatePoitem.setString(6, poItem.getWerks());
+									psUpdatePoitem.setString(7, poItem.getKnttp());
+									psUpdatePoitem.setString(8, poItem.getWerks() + poItem.getLgort());
+									psUpdatePoitem.setString(9, poItem.getLoekz());
+									psUpdatePoitem.setString(10, poItem.getMatkl());
+
+									psUpdatePoitem.setString(11, poItem.getMatnr());
+									psUpdatePoitem.setString(12, poItem.getMeins());
+									psUpdatePoitem.setDouble(13, Double.parseDouble(poItem.getMenge()));
+									psUpdatePoitem.setString(14, poItem.getMfrnr());
+									psUpdatePoitem.setString(15, poItem.getMwskz());
+									psUpdatePoitem.setString(16, poItem.getPstyp());
+									psUpdatePoitem.setString(17, poItem.getRepos());
+									psUpdatePoitem.setString(18, poItem.getUebto());
+									psUpdatePoitem.setString(19, poItem.getUntto());
+									psUpdatePoitem.setString(20, poItem.getWebre());
+									
+									psUpdatePoitem.setString(21, poItem.getBednr());
+									psUpdatePoitem.setString(22, poItem.getCharg());
+									//101、105收货数量
+									Double dR3receive = 0.0;
+									try{
+										dR3receive = Double.parseDouble(poItem.getSusr10());
+									}catch(Exception e1) {
+										dR3receive = 0.0;
+									}
+									psUpdatePoitem.setDouble(23, dR3receive);
+									psUpdatePoitem.setString(24, poItem.getEkgrp());
+									//101、105收货日期
+									String strr3receivedat = poItem.getSusr9();
+									java.sql.Date dtstrr3receivedat = null;
+									if(strr3receivedat == null){
+										strr3receivedat = "";
+									}else{
+										try{
+											dtstrr3receivedat = new java.sql.Date(DateUtil.convertStringToDate("yyyyMMdd",
+													strr3receivedat).getTime());
+										}catch(Exception e) {
+											strr3receivedat = "";
+										}
+									}
+									if(strr3receivedat.length() == 0){
+										psUpdatePoitem.setDate(25, null);
+									}else{
+										psUpdatePoitem.setDate(25, dtstrr3receivedat);
+									}
+									//103收货数量
+									Double dR3receive103 = 0.0;
+									try{
+										dR3receive103 = Double.parseDouble(poItem.getSusr8());
+									}catch(Exception e1) {
+										dR3receive103 = 0.0;
+									}
+									psUpdatePoitem.setDouble(26, dR3receive103);
+									//103收货日期
+									String strr3receivedat103 = poItem.getSusr7();
+									java.sql.Date dtstrr3receivedat103 = null;
+									if(strr3receivedat103 == null){
+										strr3receivedat103 = "";
+									}else{
+										try{
+											dtstrr3receivedat103 = new java.sql.Date(DateUtil.convertStringToDate("yyyyMMdd",
+													strr3receivedat103).getTime());
+										}catch(Exception e) {
+											strr3receivedat103 = "";
+										}
+									}
+									if(strr3receivedat103.length() == 0){
+										psUpdatePoitem.setDate(27, null);
+									}else{
+										psUpdatePoitem.setDate(27, dtstrr3receivedat103);
+									}
+									
+									
+									if(poHeader.getBukrs()!=null&&poHeader.getBukrs().equals("I000")){
+										psUpdatePoitem.setString(28, poItem.getSusr11());
+									}
+									else{
+										psUpdatePoitem.setString(28, null);
+									}
+									
+									psUpdatePoitem.setString(29, poItem.getSusr6());//增加101收货数量2012.06.28
+									
+									////判断 如果数量MENGE、物料MATNR、交货日期 EINDT变化，或者取消删除标志 ，订单行的R3LASTEDITTIME修改时间变为现在；否则R3LASTEDITTIME修改时间保持不变
+									
+									if(	rs.getDouble("MENGE")!=Double.parseDouble(poItem.getMenge())||
+											!(rs.getString("EINDT")!=null&&rs.getString("EINDT").equals(poItem.getEindt()))||
+											!(rs.getString("MATNR")!=null&&rs.getString("MATNR").equals(poItem.getMatnr()))||
+											(rs.getString("LOEKZ")!=null&&(poItem.getLoekz()==null||poItem.getLoekz()!=null&&poItem.getLoekz().equals("")))){
+										psUpdatePoitem.setTimestamp(30, new Timestamp((new Date()).getTime()));
+									}
+									else{
+										java.sql.Timestamp tt=rs.getTimestamp("R3LASTEDITTIME");
+										psUpdatePoitem.setTimestamp(30, tt==null?new java.sql.Timestamp(new java.util.Date().getTime()): tt);
+									}
+									psUpdatePoitem.setString(31, poItem.getIsShouHuo());
+									//采购订单号
+									psUpdatePoitem.setString(32, poItem.getCo_matnr());
+									psUpdatePoitem.setString(33, poItem.getCo_matxt());
+									
+									psUpdatePoitem.setString(31, poItem.getZcbwl());
+									psUpdatePoitem.setString(32, poItem.getZjit());
+									psUpdatePoitem.setString(33, poItem.getZctwl());
+									psUpdatePoitem.setString(34, poItem.getZzdzd());
+									psUpdatePoitem.setString(35, poItem.getZjmwl());
+									psUpdatePoitem.setString(36, poItem.getZbbwl());
+									psUpdatePoitem.setString(37, poItem.getEbeln());
+									psUpdatePoitem.setString(38, poItem.getEbelp());
+									
+									psUpdatePoitem.executeUpdate();//执行更新
+									
+									item.setStatus("S");
+									item.setReturnMsg("行项目更新成功哟!");
+									item.setHresv1(poItem.getEbeln());
+									item.setHresv2(poItem.getEbelp());
+								} catch (SQLException e) {
+									// TODO: handle exception
+									item.setStatus("E");
+									item.setReturnMsg("行项目更新失败哟!");
+									item.setHresv1(poItem.getEbeln());
+									item.setHresv2(poItem.getEbelp());
+									e.printStackTrace();
+								}
+								
+								//保存
+								items.add(item);
+								
+								isMark = false;//设置标记为false，即存在
+							}else{
+								isMark = true;//设置标记为true,不存在
+							}
+							DbUtils.closeQuietly(existItemSelect);
+							DbUtils.closeQuietly(rs);
+							DbUtils.closeQuietly(psUpdatePoitem);
+							if(isMark){
+								//执行更新操作
+								try {
+									psInsertPoitem = conn.prepareStatement(insertPoItemStr);
+									
+									psInsertPoitem.setString(1, poItem.getXersy());
+									psInsertPoitem.setString(2, poItem.getEbelp());
+									psInsertPoitem.setString(3, poItem.getEbeln());
+									psInsertPoitem.setString(4, poItem.getEindt());
+									psInsertPoitem.setString(5, poItem.getElikz());
+									psInsertPoitem.setString(6, poItem.getWerks());
+									psInsertPoitem.setString(7, poItem.getKnttp());
+									psInsertPoitem.setString(8, poItem.getWerks() + poItem.getLgort());
+									psInsertPoitem.setString(9, poItem.getLoekz());
+									psInsertPoitem.setString(10, poItem.getMatkl());
+									psInsertPoitem.setString(11, poItem.getMatnr());
+									psInsertPoitem.setString(12, poItem.getMeins());
+									psInsertPoitem.setDouble(13, Double.parseDouble(poItem.getMenge()));
+									psInsertPoitem.setString(14, poItem.getMfrnr());
+									psInsertPoitem.setString(15, poItem.getMwskz());
+									psInsertPoitem.setString(16, poItem.getPstyp());
+									psInsertPoitem.setString(17, poItem.getRepos());
+									psInsertPoitem.setString(18, poItem.getUebto());
+									psInsertPoitem.setString(19, poItem.getUntto());
+									psInsertPoitem.setString(20, poItem.getWebre());
+									psInsertPoitem.setString(21, poItem.getBednr());
+									psInsertPoitem.setString(22, poItem.getCharg());
+									///增加通用件和专用判断 2010.08.30 begin
+									if("1".equals(OnlineBUKRS)){
+										String strCharg = poItem.getCharg();
+										if(strCharg == null){
+											strCharg = "";
+										}
+										if(strCharg.length() > 0){
+											//批次不为空时，是专用件
+											psInsertPoitem.setInt(23, 2);
+										}else{
+											//批次为空时是通用件
+											psInsertPoitem.setInt(23, 1);									
+										}
+									}else{
+										///不是上线公司置成通用件
+										psInsertPoitem.setInt(23, 1);
+									}
+									///增加R3实收数量字段 gw 2010.08.12 begin
+									//101、105收货日期
+									Double dR3receive = 0.0;
+									try{
+										dR3receive = Double.parseDouble(poItem.getSusr10());
+									}catch(Exception e1) {
+										dR3receive = 0.0;
+									}
+									psInsertPoitem.setDouble(24, dR3receive);
+									psInsertPoitem.setInt(25, 2);
+									psInsertPoitem.setString(26, poItem.getEkgrp());
+									//101、105收货日期
+									String strr3receivedat = poItem.getSusr9();
+									java.sql.Date dtstrr3receivedat = null;
+									if(strr3receivedat == null){
+										strr3receivedat = "";
+									}else{
+										try{
+											dtstrr3receivedat = new java.sql.Date(DateUtil.convertStringToDate("yyyyMMdd",
+													strr3receivedat).getTime());
+										}catch(Exception e) {
+											strr3receivedat = "";
+										}
+									}
+									if(strr3receivedat.length() == 0){
+										psInsertPoitem.setDate(27, null);
+									}else{
+										psInsertPoitem.setDate(27, dtstrr3receivedat);
+									}
+									//103收货数量
+									Double dR3receive103 = 0.0;
+									try{
+										dR3receive103 = Double.parseDouble(poItem.getSusr8());
+									}catch(Exception e1) {
+										dR3receive103 = 0.0;
+									}
+									psInsertPoitem.setDouble(28, dR3receive103);
+									//103收货日期
+									String strr3receivedat103 = poItem.getSusr7();
+									java.sql.Date dtstrr3receivedat103 = null;
+									if(strr3receivedat103 == null){
+										strr3receivedat103 = "";
+									}else{
+										try{
+											dtstrr3receivedat103 = new java.sql.Date(DateUtil.convertStringToDate("yyyyMMdd",
+													strr3receivedat103).getTime());;
+										}catch(Exception e) {
+											strr3receivedat103 = "";
+										}
+									}
+									if(strr3receivedat103.length() == 0){
+										psInsertPoitem.setDate(29, null);
+									}else{
+										psInsertPoitem.setDate(29, dtstrr3receivedat103);
+									}							
+									//// gw 2010.08.12 end
+									if(poHeader.getBukrs()!=null&&poHeader.getBukrs().equals("I000")){
+										psInsertPoitem.setString(30, poItem.getSusr11());
+									}
+									else{
+										psInsertPoitem.setString(30, null);
+									}
+									//psInsertPoitem.setString(30, poItem.getSusr11());//ZSY增加直配物资标识2012.05.21
+									psInsertPoitem.setString(31, poItem.getSusr6());//ZSY增加101收货数量2012.06.28
+									psInsertPoitem.setString(32, poItem.getIsShouHuo());//WXH新增订单行的收货状态
+									//新增字段
+									psInsertPoitem.setString(33, poItem.getCo_matnr());
+									psInsertPoitem.setString(34, poItem.getCo_matxt());
+									psInsertPoitem.setString(35, poItem.getZcbwl());
+									psInsertPoitem.setString(36, poItem.getZjit());
+									psInsertPoitem.setString(37, poItem.getZctwl());
+									psInsertPoitem.setString(38, poItem.getZzdzd());
+									psInsertPoitem.setString(39, poItem.getZjmwl());
+									psInsertPoitem.setString(40, poItem.getZbbwl());
+									
+									psInsertPoitem.executeUpdate();
+									
+									item.setStatus("S");
+									item.setReturnMsg("行项目新增成功哟!");
+									item.setHresv1(poItem.getEbeln());
+									item.setHresv2(poItem.getEbelp());
+								} catch (SQLException e) {
+									item.setStatus("E");
+									item.setReturnMsg("行项目新增失败哟!");
+									item.setHresv1(poItem.getEbeln());
+									item.setHresv2(poItem.getEbelp());
+									e.printStackTrace();
+								}
+								//保存item
+								items.add(item);
+							}
+							DbUtils.closeQuietly(psInsertPoitem);
+						}
+					}
+				}
+			}
+		} catch (SQLException | ParseException e) {
+			//返回错误信息
+			baseReturnHeader.setStatus("E");
+			baseReturnHeader.setReturnMsg(e.toString());
+			e.printStackTrace();
+		}
+		
+		baseReturnMess.setBaseReturnHeader(baseReturnHeader);
+		baseReturnMess.setItems(items);
+		
+		return baseReturnMess;
+	}
+	
+	/**
+	 * 
+	 * @return
+	 */
+	private Connection getConnection() {
+		Connection con = null;
+		InitialContext context;
+		if(dataSource == null){
+			try {
+				context = new InitialContext();
+				DataSource ds = (DataSource) context.lookup("java:comp/env/jdbc/changhongvmi");
+				con = ds.getConnection();
+			} catch (NamingException e) {
+				e.printStackTrace();
+			} catch (SQLException e) {
+				e.printStackTrace();
+			}
+		}else{
+			try {
+				con = dataSource.getConnection();
+			}catch(Exception e) {
+				
+			}
+		}
+		return con;
+	}
+}
