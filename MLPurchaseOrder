@@ -1,0 +1,33 @@
+package com.changhong.vmi.admin.xfire.pojo;
+
+import java.io.Serializable;
+import java.util.Set;
+
+import org.apache.commons.lang.builder.ReflectionToStringBuilder;
+/**
+ * 
+ * @author Fun
+ * 美菱订单
+ */
+public class MLPurchaseOrder implements Serializable {
+
+	/**
+	 * 
+	 */
+	private static final long serialVersionUID = -5164006133475805218L;
+	
+	private Set<Po> pos;
+
+	public Set<Po> getPos() {
+		return pos;
+	}
+
+	public void setPos(Set<Po> pos) {
+		this.pos = pos;
+	}
+	
+	@Override
+	public String toString() {
+		return ReflectionToStringBuilder.reflectionToString(this);
+	}	
+}
