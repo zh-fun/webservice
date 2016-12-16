@@ -1,0 +1,8 @@
+package com.changhong.vmi.admin.xfire.service;
+
+import com.changhong.vmi.admin.xfire.pojo.BaseReturnMess;
+import com.changhong.vmi.admin.xfire.pojo.MLPurchaseOrder;
+
+public interface MLPurchaseOrderService {
+	public BaseReturnMess handleMLPurchaseOrderService(MLPurchaseOrder mlPurchaseOrder);
+}
